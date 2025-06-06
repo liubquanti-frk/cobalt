@@ -25,9 +25,17 @@ import * as Cookies from "../processing/cookie/manager.js";
 import * as YouTubeSession from "../processing/helpers/youtube-session.js";
 
 const git = {
-    branch: await getBranch(),
-    commit: await getCommit(),
-    remote: await getRemote(),
+  branch: 'unknown',
+  commit: 'unknown',
+  remote: 'unknown'
+};
+
+try {
+  git.branch = await getBranch();
+  git.commit = await getCommit();
+  git.remote = await getRemote();
+} catch (e) {
+  console.warn('Failed to get Git information:', e.message);
 }
 
 const version = await getVersion();
