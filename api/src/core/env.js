@@ -1,15 +1,17 @@
-import { Constants } from "youtubei.js";
+import { Constants } from "@imput/youtubei.js";
 import { services } from "../processing/service-config.js";
 import { updateEnv, canonicalEnv, env as currentEnv } from "../config.js";
 
 import { FileWatcher } from "../misc/file-watcher.js";
 import { isURL } from "../misc/utils.js";
 import * as cluster from "../misc/cluster.js";
-import { Yellow } from "../misc/console-text.js";
+import { Green, Yellow } from "../misc/console-text.js";
 
 const forceLocalProcessingOptions = ["never", "session", "always"];
+const youtubeHlsOptions = ["never", "key", "always"];
 
 export const loadEnvs = (env = process.env) => {
+    const allServices = new Set(Object.keys(services));
     const disabledServices = env.DISABLED_SERVICES?.split(',') || [];
     const enabledServices = new Set(Object.keys(services).filter(e => {
         if (!disabledServices.includes(e)) {
@@ -37,7 +39,12 @@ export const loadEnvs = (env = process.env) => {
         tunnelRateLimitMax: (env.TUNNEL_RATELIMIT_MAX && parseInt(env.TUNNEL_RATELIMIT_MAX)) || 40,
 
         sessionRateLimitWindow: (env.SESSION_RATELIMIT_WINDOW && parseInt(env.SESSION_RATELIMIT_WINDOW)) || 60,
-        sessionRateLimit: (env.SESSION_RATELIMIT && parseInt(env.SESSION_RATELIMIT)) || 10,
+        sessionRateLimit:
+            // backwards compatibility with SESSION_RATELIMIT
+            // till next major due to an error in docs
+            (env.SESSION_RATELIMIT_MAX && parseInt(env.SESSION_RATELIMIT_MAX))
+            || (env.SESSION_RATELIMIT && parseInt(env.SESSION_RATELIMIT))
+            || 10,
 
         durationLimit: (env.DURATION_LIMIT && parseInt(env.DURATION_LIMIT)) || 10800,
         streamLifespan: (env.TUNNEL_LIFESPAN && parseInt(env.TUNNEL_LIFESPAN)) || 90,
@@ -63,6 +70,7 @@ export const loadEnvs = (env = process.env) => {
         instanceCount: (env.API_INSTANCE_COUNT && parseInt(env.API_INSTANCE_COUNT)) || 1,
         keyReloadInterval: 900,
 
+        allServices,
         enabledServices,
 
         customInnertubeClient: env.CUSTOM_INNERTUBE_CLIENT,
@@ -73,6 +81,9 @@ export const loadEnvs = (env = process.env) => {
 
         // "never" | "session" | "always"
         forceLocalProcessing: env.FORCE_LOCAL_PROCESSING ?? "never",
+
+        // "never" | "key" | "always"
+        enableDeprecatedYoutubeHls: env.ENABLE_DEPRECATED_YOUTUBE_HLS ?? "never",
 
         envFile: env.API_ENV_FILE,
         envRemoteReloadInterval: 300,
@@ -106,9 +117,17 @@ export const validateEnvs = async (env) => {
         throw new Error("Invalid FORCE_LOCAL_PROCESSING");
     }
 
+    if (env.enableDeprecatedYoutubeHls && !youtubeHlsOptions.includes(env.enableDeprecatedYoutubeHls)) {
+        console.error("ENABLE_DEPRECATED_YOUTUBE_HLS is invalid.");
+        console.error(`Supported options are are: ${youtubeHlsOptions.join(', ')}\n`);
+        throw new Error("Invalid ENABLE_DEPRECATED_YOUTUBE_HLS");
+    }
+
     if (env.externalProxy && env.freebindCIDR) {
         throw new Error('freebind is not available when external proxy is enabled')
     }
+
+    return env;
 }
 
 const reloadEnvs = async (contents) => {
@@ -136,14 +155,34 @@ const reloadEnvs = async (contents) => {
         ...newEnvs,
     };
 
-    const parsed = loadEnvs(candidate);
-    await validateEnvs(parsed);
-    updateEnv(parsed);
+    const parsed = await validateEnvs(
+        loadEnvs(candidate)
+    );
+
     cluster.broadcast({ env_update: resolvedContents });
+    return updateEnv(parsed);
 }
 
 const wrapReload = (contents) => {
     reloadEnvs(contents)
+    .then(changes => {
+        if (changes.length === 0) {
+            return;
+        }
+
+        console.log(`${Green('[✓]')} envs reloaded successfully!`);
+        for (const key of changes) {
+            const value = currentEnv[key];
+            const isSecret = key.toLowerCase().includes('apikey')
+                          || key.toLowerCase().includes('secret');
+
+            if (!value) {
+                console.log(`    removed: ${key}`);
+            } else {
+                console.log(`    changed: ${key} -> ${isSecret ? '***' : value}`);
+            }
+        }
+    })
     .catch((e) => {
         console.error(`${Yellow('[!]')} Failed reloading environment variables at ${new Date().toISOString()}.`);
         console.error('Error:', e);
